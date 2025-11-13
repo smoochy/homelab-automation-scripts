@@ -1,10 +1,10 @@
-# Auto Tag & optionally delete movie
+# Auto Tag & optionally delete watched movie
 
 ## What it does
 
 With the help of Tautulli, this will automatically tag a movie after it has been
-watched, unmonitor it in Radarr and deletes the movie file afterwards. If the movie has a second tag, the script
-optionally keeps the movie file, unmonitors and tags it as watched.
+watched, unmonitor it in Radarr and deletes the movie file afterwards. If the movie has
+a `keep` tag, the script optionally keeps the movie file, but unmonitors and tags it as watched.
 
 The script will not be triggered, if manually setting a movie to watched in Plex.
 <br><br>
@@ -14,20 +14,19 @@ The script will not be triggered, if manually setting a movie to watched in Plex
 I am not keeping any watched movies on my drives, but I want to keep a history, if I already
 watched a movie or not. For that I added a `watched` label in Radarr.
 
-And also sometimes I want to keep a movie,
-after I watched it - or my daughter wants to see a certain movie for the 5th time...
+And also sometimes I want to keep a movie, after I watched it - or my daughter wants to see a certain movie for the 5th time...
 <br><br>
 
 ## Requirements
 
-- Completely set up Plex instance
+- Completely set up Plex instance & known X-Plex Token ([Finding an authentication token / X-Plex-Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
 - Completely set up Radarr instance
 - Completely set up Tautulli instance, connected to your Plex instance
 <br><br>
 
 ## Setup
 
-1. Add watched and keep tag to 1 movie in Radarr:
+1. Add `watched` and `keep` tag to 1 movie in Radarr:
    1. Click on a movie.
    2. Click on edit.
    3. In the tags section add i.e. `watched` and `keep` as two tags and click on `Save`.
@@ -38,11 +37,13 @@ after I watched it - or my daughter wants to see a certain movie for the 5th tim
       `keep` tag to the movie. Or do it later in Radarr.
 2. Download `radarr_movie.py`.
 3. Modify `radarr_movie.py`:
-   1. Add URL and Port of your Radarr instance in line 9.
-   2. Add Radarr API Key in line 10.
-   3. Edit name of tag for watched movies (i.e. `watched`)in line 12.
-   4. Edit name of tag for movies to keep (i.e. `keep`)in line 13.
-   5. Edit time in seconds after which movies should be deleted in line 16.
+   1. Add URL and Port of your Radarr instance in line 11.
+   2. Add Radarr API Key in line 12.
+   3. Add URL and Port of your Plex instance in line 15.
+   4. Add X-Plex-Token in line 16. ([Finding an authentication token / X-Plex-Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
+   5. Edit name of tag for watched movies (i.e. `watched`) in line 18.
+   6. Edit name of tag for movies to keep (i.e. `keep`) in line 19.
+   7. Edit time in seconds after which movies should be deleted in line 22.
 4. Copy `radarr_movie.py` into the Tautulli `Config` folder - next to `tautulli.db` and `config.ini`.
 5. In Tautulli, go to gear icon -> `Settings` -> `Notifications Agents`
 6. Click on `Add new notification agent`.
@@ -57,7 +58,7 @@ after I watched it - or my daughter wants to see a certain movie for the 5th tim
     1. `Condition {1}` should be set to: `Media Type is not Episode`. You need to enter
        `Episode` manually.
 11. `Arguments` tab:
-    1. Click on `Watched`and add `{title} {year}` to the `Script Arguments`.
+    1. Click on `Watched`and add `{rating_key} {title} {year}` to the `Script Arguments`.
 12. Click on `Save` and close the `Script Settings` window.
 13. Adjust movie played threshold:
     1. In Plex go to `Settings` -> `Settings` -> `Library` and adjust `Video played threshold` to your liking. I have set it to 95%.
