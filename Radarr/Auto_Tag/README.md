@@ -4,7 +4,7 @@
 
 With the help of Tautulli, this will automatically tag a movie after it has been
 watched, unmonitor it in Radarr and deletes the movie file afterwards. If the movie has
-a `keep` tag, the script optionally keeps the movie file, but unmonitors and tags it as watched.
+a `keep` tag, the script optionally keeps the movie file, keeps it monitored and tags it as watched.
 
 The script will not be triggered, if manually setting a movie to watched in Plex.
 <br><br>
@@ -37,30 +37,34 @@ And also sometimes I want to keep a movie, after I watched it - or my daughter w
       `keep` tag to the movie. Or do it later in Radarr.
 2. Download `radarr_movie.py`.
 3. Modify `radarr_movie.py`:
-   1. Add URL and Port of your Radarr instance in line 11.
-   2. Add Radarr API Key in line 12.
-   3. Add URL and Port of your Plex instance in line 15.
-   4. Add X-Plex-Token in line 16. ([Finding an authentication token / X-Plex-Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
-   5. Edit name of tag for watched movies (i.e. `watched`) in line 18.
-   6. Edit name of tag for movies to keep (i.e. `keep`) in line 19.
-   7. Edit time in seconds after which movies should be deleted in line 22.
-4. Copy `radarr_movie.py` into the Tautulli `Config` folder - next to `tautulli.db` and `config.ini`.
+   1. Add URL and Port of your Radarr instance in line 18 between `''`.
+   2. Add Radarr API Key in line 19 between `''`.
+   3. Add URL and Port of your Plex instance in line 22 between `''`.
+   4. Add X-Plex-Token in line 23 between `''`. ([Finding an authentication token / X-Plex-Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
+   5. Edit name of tag for watched movies (i.e. `watched`) in line 25 between `''`.
+   6. Edit name of tag for movies to keep (i.e. `keep`) in line 26 between `''`.
+   7. Edit time in seconds after which movies should be deleted in line 29 between `''`.
+4. Create folder in Tautulli environment:
+   1. Create a folder `scripts` in the Tautulli `Config` folder - next to `tautulli.db` and `config.ini`.
+   2. Create a folder `auto_tag` inside this `scripts` folder.
+   3. Copy `radarr_movie.py` into the `auto_tag` folder.
 5. In Tautulli, go to gear icon -> `Settings` -> `Notifications Agents`
 6. Click on `Add new notification agent`.
 7. In the list, select `Script`.
 8. `Configuration` tab:
-   1. For `Script Folder` click on `Browse` and select the `Config` folder of Tautulli you copied `radarr_movie.py` into.
+   1. For `Script Folder` click on `Browse` and select the `/config/scripts/auto_tag`
+      folder of Tautulli you copied `radarr_movie.py` into.
    2. Click for `Script File` into the dropdown menu and select `radarr_movie.py`.
    3. For `Description` chose something of your liking (i.ie `Radarr 'watched' and delete in 1h`).
-9. `Triggers`tab:
-   1. Select `Watched`.
-10. `Conditions` tab:
+    `Triggers`tab:
+   4. Select `Watched`.
+9. `Conditions` tab:
     1. `Condition {1}` should be set to: `Media Type is not Episode`. You need to enter
        `Episode` manually.
-11. `Arguments` tab:
+10. `Arguments` tab:
     1. Click on `Watched`and add `{rating_key} {title} {year}` to the `Script Arguments`.
-12. Click on `Save` and close the `Script Settings` window.
-13. Adjust movie played threshold:
+11. Click on `Save` and close the `Script Settings` window.
+12. Adjust movie played threshold:
     1. In Plex go to `Settings` -> `Settings` -> `Library` and adjust `Video played threshold` to your liking. I have set it to 95%.
     2. In Tautulli go to `Settings` -> `General` and set `Movie Watched Percentage` to
        the same value.

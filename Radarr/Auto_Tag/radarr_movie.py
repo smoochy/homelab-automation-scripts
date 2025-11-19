@@ -7,16 +7,23 @@ from datetime import datetime, timedelta
 
 import requests
 
+def normalize_url(url):
+    if url is None:
+        return None
+    normalized_url = url.strip().rstrip('/')
+    return normalized_url
+
+
 # ======= Configuration =======
-RADARR_URL = ""
-RADARR_API_KEY = ""
+RADARR_URL = normalize_url('')
+RADARR_API_KEY = ''
 
 # Plex server base URL and token (required for rating_key-based lookups)
-PLEX_URL = ""
-PLEX_TOKEN = ""
+PLEX_URL = normalize_url('')
+PLEX_TOKEN = ''
 
-WATCHED_TAG_LABEL = "watched"  # Label of the Radarr tag to apply
-KEEP_TAG_LABEL = "keep"  # Label that prevents deletion
+WATCHED_TAG_LABEL = 'watched'  # Label of the Radarr tag to apply
+KEEP_TAG_LABEL = 'keep'  # Label that prevents deletion
 
 # Delay before deleting the file. 3600 seconds = 1h
 DELETION_DELAY_SECONDS = 3600
@@ -31,7 +38,7 @@ def fetch_tag_map():
     """
     Fetch all Radarr tags and return a mapping {label_lowercase: id}.
     """
-    resp = requests.get(f"{RADARR_URL.rstrip('/')}/api/v3/tag", headers=get_headers())
+    resp = requests.get(f"{RADARR_URL}/api/v3/tag", headers=get_headers())
     resp.raise_for_status()
     tags = resp.json() or []
     return {
@@ -111,7 +118,7 @@ def plex_get_metadata(rating_key: str) -> dict:
     params = {"includeGuids": "1", "X-Plex-Token": PLEX_TOKEN}
     headers = {"Accept": "application/json"}
 
-    url = f"{PLEX_URL.rstrip('/')}/library/metadata/{rating_key}"
+    url = f"{PLEX_URL}/library/metadata/{rating_key}"
     resp = requests.get(url, params=params, headers=headers, timeout=10)
     resp.raise_for_status()
     data = resp.json()
@@ -255,7 +262,7 @@ def main():
 
     try:
         all_movies = requests.get(
-            f"{RADARR_URL.rstrip('/')}/api/v3/movie", headers=get_headers()
+            f"{RADARR_URL}/api/v3/movie", headers=get_headers()
         ).json()
     except Exception as e:
         print(f"[ERROR] Unable to fetch Radarr movies: {e}")
@@ -283,20 +290,28 @@ def main():
     if tag_id not in updated_tags:
         updated_tags.append(tag_id)
     updated["tags"] = updated_tags
+    
+    # Set monitored to false when deleting file, otherwise movie might get upgraded unnecessarily
+    if keep_tag_id not in updated_tags:
+        updated["monitored"] = False
+
 
     try:
         requests.put(
-            f"{RADARR_URL.rstrip('/')}/api/v3/movie/{movie_id}",
+            f"{RADARR_URL}/api/v3/movie/{movie_id}",
             headers=get_headers(),
             json=updated,
         )
-        print(f"[INFO] Tag '{WATCHED_TAG_LABEL}' applied to '{title}'.")
+        if keep_tag_id not in updated_tags:
+            print(f"[INFO] Tag '{WATCHED_TAG_LABEL}' applied to '{title}' & unmonitored.")
+        else:
+            print(f"[INFO] Tag '{WATCHED_TAG_LABEL}' applied to '{title}'.")
     except Exception as e:
-        print(f"[ERROR] Failed to apply tag: {e}")
+        print(f"[ERROR] Failed to apply tag & unmonitor: {e}")
         sys.exit(1)
 
     if keep_tag_id is not None and keep_tag_id in updated_tags:
-        print(f"[INFO] Keep-tag present. Skipping deletion for '{title}'.")
+        print(f"[INFO] Keep-tag present. Skipping deletion for '{title}'  & keeping monitored.")
         sys.exit(0)
 
     if not movie_file or "id" not in movie_file:
@@ -310,7 +325,7 @@ def main():
     )
     delete_cmd = (
         f"sleep {DELETION_DELAY_SECONDS} && "
-        f"curl -sS -X DELETE '{RADARR_URL.rstrip('/')}/api/v3/moviefile/{file_id}' "
+        f"curl -sS -X DELETE '{RADARR_URL}/api/v3/moviefile/{file_id}' "
         f"-H 'X-Api-Key: {RADARR_API_KEY}'"
     )
 
