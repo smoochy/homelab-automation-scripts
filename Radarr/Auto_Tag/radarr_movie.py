@@ -20,27 +20,96 @@ except ImportError:
     requests = None
 
 
-# ======= Configuration (loaded from environment) =======
-RADARR_URL = None
-RADARR_API_KEY = None
-PLEX_URL = None
-PLEX_TOKEN = None
-WATCHED_TAG_LABEL = "watched"
-KEEP_TAG_LABEL = "keep"
-DELETION_DELAY_SECONDS = 7200
-REQUEST_TIMEOUT_SECONDS = 10
-# ======================================================
+# ======= Configuration defaults =======
+DEFAULT_RADARR_URL = None
+DEFAULT_RADARR_API_KEY = None
+DEFAULT_PLEX_URL = None
+DEFAULT_PLEX_TOKEN = None
+DEFAULT_WATCHED_TAG_LABEL = "watched"
+DEFAULT_KEEP_TAG_LABEL = "keep"
+DEFAULT_DELETION_DELAY_SECONDS = 7200
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
+# =====================================
+
+# ======= Runtime configuration =======
+RADARR_URL = DEFAULT_RADARR_URL
+RADARR_API_KEY = DEFAULT_RADARR_API_KEY
+PLEX_URL = DEFAULT_PLEX_URL
+PLEX_TOKEN = DEFAULT_PLEX_TOKEN
+WATCHED_TAG_LABEL = DEFAULT_WATCHED_TAG_LABEL
+KEEP_TAG_LABEL = DEFAULT_KEEP_TAG_LABEL
+DELETION_DELAY_SECONDS = DEFAULT_DELETION_DELAY_SECONDS
+REQUEST_TIMEOUT_SECONDS = DEFAULT_REQUEST_TIMEOUT_SECONDS
+# =====================================
 
 QUEUE_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "radarr_movie.pending.json"
 )
 QUEUE_LOCK_FILE = f"{QUEUE_FILE}.lock"
+DEFAULT_ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
 
 def normalize_url(url):
     if url is None:
         return None
     return str(url).strip().rstrip("/")
+
+
+def parse_env_value(raw_value):
+    value = raw_value.strip()
+    if not value:
+        return ""
+
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        quote = value[0]
+        value = value[1:-1]
+        if quote == '"':
+            value = bytes(value, "utf-8").decode("unicode_escape")
+
+    comment_index = value.find(" #")
+    if comment_index != -1:
+        value = value[:comment_index].rstrip()
+
+    return value
+
+
+def load_dotenv_file(env_file=None, override=False):
+    env_path = env_file or os.getenv("AUTO_TAG_ENV_FILE") or DEFAULT_ENV_FILE
+    env_path = os.path.abspath(env_path)
+
+    if not os.path.exists(env_path):
+        return
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
+
+                if "=" not in line:
+                    print(
+                        f"[WARN] Ignoring invalid .env line {line_number} in "
+                        f"'{env_path}'."
+                    )
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    print(
+                        f"[WARN] Ignoring invalid .env line {line_number} in "
+                        f"'{env_path}'."
+                    )
+                    continue
+
+                if override or key not in os.environ:
+                    os.environ[key] = parse_env_value(value)
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read environment file '{env_path}': {exc}") from exc
 
 
 def get_required_env(name):
@@ -73,14 +142,24 @@ def load_config_from_env(require_plex):
     global DELETION_DELAY_SECONDS
     global REQUEST_TIMEOUT_SECONDS
 
+    load_dotenv_file()
+
     RADARR_URL = normalize_url(get_required_env("RADARR_URL"))
     RADARR_API_KEY = get_required_env("RADARR_API_KEY")
     WATCHED_TAG_LABEL = (
-        os.getenv("WATCHED_TAG_LABEL", WATCHED_TAG_LABEL).strip() or "watched"
+        os.getenv("WATCHED_TAG_LABEL", DEFAULT_WATCHED_TAG_LABEL).strip()
+        or DEFAULT_WATCHED_TAG_LABEL
     )
-    KEEP_TAG_LABEL = os.getenv("KEEP_TAG_LABEL", KEEP_TAG_LABEL).strip() or "keep"
-    DELETION_DELAY_SECONDS = get_env_int("DELETION_DELAY_SECONDS", 7200)
-    REQUEST_TIMEOUT_SECONDS = get_env_int("REQUEST_TIMEOUT_SECONDS", 10)
+    KEEP_TAG_LABEL = (
+        os.getenv("KEEP_TAG_LABEL", DEFAULT_KEEP_TAG_LABEL).strip()
+        or DEFAULT_KEEP_TAG_LABEL
+    )
+    DELETION_DELAY_SECONDS = get_env_int(
+        "DELETION_DELAY_SECONDS", DEFAULT_DELETION_DELAY_SECONDS
+    )
+    REQUEST_TIMEOUT_SECONDS = get_env_int(
+        "REQUEST_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT_SECONDS
+    )
 
     if require_plex:
         PLEX_URL = normalize_url(get_required_env("PLEX_URL"))
