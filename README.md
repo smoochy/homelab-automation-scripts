@@ -42,6 +42,7 @@ own folder.
 
 ### SABnzbd
 
+- [Download Speed Monitor and Recovery Script](./SABnzbd/monitor_sab_speed/)
 - [ISO Extractor Post-Processing Script](./SABnzbd/extract_iso/)
 - [Delete Items From History Scripts](./SABnzbd/delete_item_from_history/)
 
