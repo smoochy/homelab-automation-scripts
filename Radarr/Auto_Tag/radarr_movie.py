@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+import configparser
 import json
 import os
 import re
+import sqlite3
 import sys
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from urllib import error as urllib_error
@@ -29,6 +32,14 @@ DEFAULT_WATCHED_TAG_LABEL = "watched"
 DEFAULT_KEEP_TAG_LABEL = "keep"
 DEFAULT_DELETION_DELAY_SECONDS = 7200
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 10
+DEFAULT_TAUTULLI_CONFIG_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "config.ini")
+)
+DEFAULT_TAUTULLI_DB_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tautulli.db")
+)
+DEFAULT_SESSION_WAIT_SECONDS = 20
+DEFAULT_SESSION_LOOKBACK_HOURS = 12
 # =====================================
 
 # ======= Runtime configuration =======
@@ -40,6 +51,10 @@ WATCHED_TAG_LABEL = DEFAULT_WATCHED_TAG_LABEL
 KEEP_TAG_LABEL = DEFAULT_KEEP_TAG_LABEL
 DELETION_DELAY_SECONDS = DEFAULT_DELETION_DELAY_SECONDS
 REQUEST_TIMEOUT_SECONDS = DEFAULT_REQUEST_TIMEOUT_SECONDS
+TAUTULLI_CONFIG_PATH = DEFAULT_TAUTULLI_CONFIG_PATH
+TAUTULLI_DB_PATH = DEFAULT_TAUTULLI_DB_PATH
+SESSION_WAIT_SECONDS = DEFAULT_SESSION_WAIT_SECONDS
+SESSION_LOOKBACK_HOURS = DEFAULT_SESSION_LOOKBACK_HOURS
 # =====================================
 
 QUEUE_FILE = os.path.join(
@@ -141,6 +156,10 @@ def load_config_from_env(require_plex):
     global KEEP_TAG_LABEL
     global DELETION_DELAY_SECONDS
     global REQUEST_TIMEOUT_SECONDS
+    global TAUTULLI_CONFIG_PATH
+    global TAUTULLI_DB_PATH
+    global SESSION_WAIT_SECONDS
+    global SESSION_LOOKBACK_HOURS
 
     load_dotenv_file()
 
@@ -159,6 +178,24 @@ def load_config_from_env(require_plex):
     )
     REQUEST_TIMEOUT_SECONDS = get_env_int(
         "REQUEST_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT_SECONDS
+    )
+    tautulli_config_path = os.getenv("TAUTULLI_CONFIG_PATH")
+    tautulli_db_path = os.getenv("TAUTULLI_DB_PATH")
+    TAUTULLI_CONFIG_PATH = os.path.abspath(
+        tautulli_config_path.strip()
+        if tautulli_config_path and tautulli_config_path.strip()
+        else DEFAULT_TAUTULLI_CONFIG_PATH
+    )
+    TAUTULLI_DB_PATH = os.path.abspath(
+        tautulli_db_path.strip()
+        if tautulli_db_path and tautulli_db_path.strip()
+        else DEFAULT_TAUTULLI_DB_PATH
+    )
+    SESSION_WAIT_SECONDS = get_env_int(
+        "SESSION_WAIT_SECONDS", DEFAULT_SESSION_WAIT_SECONDS
+    )
+    SESSION_LOOKBACK_HOURS = get_env_int(
+        "SESSION_LOOKBACK_HOURS", DEFAULT_SESSION_LOOKBACK_HOURS
     )
 
     if require_plex:
@@ -277,6 +314,26 @@ def parse_iso_datetime(value):
     return parsed
 
 
+def format_movie_label(title=None, year=None, rating_key=None):
+    title_text = str(title).strip() if title is not None else ""
+    year_text = str(year).strip() if year is not None else ""
+    rating_key_text = str(rating_key).strip() if rating_key is not None else ""
+
+    if title_text:
+        label = title_text
+        if year_text:
+            label = f"{label} ({year_text})"
+    elif rating_key_text:
+        label = f"ratingKey {rating_key_text}"
+    else:
+        label = "<unknown>"
+
+    if rating_key_text and title_text:
+        return f"{label} [ratingKey {rating_key_text}]"
+
+    return label
+
+
 @contextmanager
 def queue_lock():
     os.makedirs(os.path.dirname(QUEUE_LOCK_FILE), exist_ok=True)
@@ -325,7 +382,9 @@ def save_queue_unlocked(tasks):
     os.replace(tmp_path, QUEUE_FILE)
 
 
-def delete_movie_file(file_id, title):
+def delete_movie_file(file_id, title, year=None):
+    movie_label = format_movie_label(title, year)
+
     try:
         response = http_request(
             "DELETE",
@@ -334,23 +393,23 @@ def delete_movie_file(file_id, title):
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        print(f"[ERROR] Failed to delete queued file for '{title}': {exc}")
+        print(f"[ERROR] Failed to delete queued file for '{movie_label}': {exc}")
         return False
 
     if response.status_code == 404:
         print(
-            f"[INFO] Queued deletion for '{title}' skipped because file ID {file_id} "
-            "is already gone."
+            f"[INFO] Queued deletion for '{movie_label}' skipped because file ID "
+            f"{file_id} is already gone."
         )
         return True
 
     try:
         response.raise_for_status()
     except Exception as exc:
-        print(f"[ERROR] Failed to delete queued file for '{title}': {exc}")
+        print(f"[ERROR] Failed to delete queued file for '{movie_label}': {exc}")
         return False
 
-    print(f"[INFO] Deleted queued movie file for '{title}' (file ID {file_id}).")
+    print(f"[INFO] Deleted queued movie file for '{movie_label}' (file ID {file_id}).")
     return True
 
 
@@ -367,17 +426,22 @@ def process_pending_deletions():
 
         for task in tasks:
             title = task.get("title") or "<unknown>"
+            year = task.get("year")
+            movie_label = format_movie_label(title, year)
             file_id = task.get("file_id")
             delete_after = parse_iso_datetime(task.get("delete_after"))
 
             if not file_id:
-                print(f"[WARN] Dropping invalid queue entry without file_id for '{title}'.")
+                print(
+                    f"[WARN] Dropping invalid queue entry without file_id for "
+                    f"'{movie_label}'."
+                )
                 continue
 
             if delete_after is None:
                 print(
                     f"[WARN] Dropping invalid queue entry without valid delete_after "
-                    f"for '{title}' (file ID {file_id})."
+                    f"for '{movie_label}' (file ID {file_id})."
                 )
                 continue
 
@@ -385,7 +449,7 @@ def process_pending_deletions():
                 remaining_tasks.append(task)
                 continue
 
-            if delete_movie_file(file_id, title):
+            if delete_movie_file(file_id, title, year):
                 processed_count += 1
             else:
                 remaining_tasks.append(task)
@@ -395,7 +459,137 @@ def process_pending_deletions():
     return processed_count
 
 
-def queue_movie_deletion(file_id, movie_id, title):
+def load_tautulli_movie_watched_percent():
+    if not os.path.exists(TAUTULLI_CONFIG_PATH):
+        raise RuntimeError(
+            f"Tautulli config not found at '{TAUTULLI_CONFIG_PATH}'."
+        )
+
+    parser = configparser.ConfigParser(interpolation=None)
+    read_files = parser.read(TAUTULLI_CONFIG_PATH, encoding="utf-8")
+    if not read_files:
+        raise RuntimeError(
+            f"Unable to read Tautulli config at '{TAUTULLI_CONFIG_PATH}'."
+        )
+
+    try:
+        watched_percent = parser.getint("Monitoring", "movie_watched_percent")
+    except (configparser.Error, ValueError) as exc:
+        raise RuntimeError(
+            "Unable to read 'movie_watched_percent' from the Tautulli config."
+        ) from exc
+
+    if watched_percent < 1 or watched_percent > 100:
+        raise RuntimeError(
+            f"Tautulli movie_watched_percent must be between 1 and 100, got "
+            f"'{watched_percent}'."
+        )
+
+    return watched_percent
+
+
+def get_recent_tautulli_session(rating_key):
+    if not os.path.exists(TAUTULLI_DB_PATH):
+        raise RuntimeError(f"Tautulli DB not found at '{TAUTULLI_DB_PATH}'.")
+
+    lookback_seconds = max(1, int(SESSION_LOOKBACK_HOURS) * 3600)
+    connection = sqlite3.connect(
+        f"file:{TAUTULLI_DB_PATH}?mode=ro",
+        uri=True,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    connection.row_factory = sqlite3.Row
+
+    try:
+        row = connection.execute(
+            """
+            SELECT
+                sh.id,
+                sh.reference_id,
+                sh.started,
+                sh.stopped,
+                sh.view_offset,
+                sh.paused_counter,
+                mi.duration
+            FROM session_history AS sh
+            LEFT JOIN session_history_media_info AS mi
+                ON mi.id = sh.id
+            WHERE sh.rating_key = ?
+              AND sh.media_type = 'movie'
+              AND sh.stopped IS NOT NULL
+              AND sh.stopped >= CAST(strftime('%s', 'now') AS INTEGER) - ?
+            ORDER BY sh.stopped DESC, sh.id DESC
+            LIMIT 1
+            """,
+            (int(rating_key), lookback_seconds),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    return dict(row) if row is not None else None
+
+
+def wait_for_recent_tautulli_session(rating_key):
+    deadline = time.monotonic() + max(0, SESSION_WAIT_SECONDS)
+    last_error = None
+
+    while True:
+        try:
+            session = get_recent_tautulli_session(rating_key)
+        except RuntimeError as exc:
+            last_error = exc
+            session = None
+
+        if session is not None:
+            return session
+
+        if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise last_error
+            return None
+
+        time.sleep(1)
+
+
+def confirm_watched_session(rating_key, title=None, year=None):
+    movie_label = format_movie_label(title, year, rating_key=rating_key)
+    watched_percent_threshold = load_tautulli_movie_watched_percent()
+    session = wait_for_recent_tautulli_session(rating_key)
+    if session is None:
+        print(
+            f"[WARN] No recent completed Tautulli session found for '{movie_label}'. "
+            "Skipping Radarr changes."
+        )
+        return False
+
+    duration = session.get("duration") or 0
+    view_offset = session.get("view_offset") or 0
+    if duration <= 0:
+        print(
+            f"[WARN] Tautulli session {session.get('id')} for '{movie_label}' has no "
+            "valid duration. Skipping Radarr changes."
+        )
+        return False
+
+    watched_percent = min(float(view_offset), float(duration)) / float(duration) * 100.0
+    print(
+        f"[INFO] Tautulli session {session.get('id')} verification for "
+        f"'{movie_label}': {watched_percent:.2f}% watched using Tautulli's "
+        f"movie_watched_percent={watched_percent_threshold}%."
+    )
+
+    if watched_percent < watched_percent_threshold:
+        print(
+            f"[INFO] Watched verification failed for '{movie_label}'. "
+            f"Required {watched_percent_threshold}% but only {watched_percent:.2f}% "
+            "was recorded. Skipping Radarr changes."
+        )
+        return False
+
+    return True
+
+
+def queue_movie_deletion(file_id, movie_id, title, year=None):
     delete_after = utc_now() + timedelta(seconds=DELETION_DELAY_SECONDS)
     task = {
         "created_at": utc_now().isoformat(),
@@ -404,6 +598,8 @@ def queue_movie_deletion(file_id, movie_id, title):
         "movie_id": movie_id,
         "title": title,
     }
+    if year is not None:
+        task["year"] = int(year)
 
     with queue_lock():
         tasks = load_queue_unlocked()
@@ -591,7 +787,10 @@ def find_movie_advanced(
                 return m
 
     # 4) Fallback: title/year
-    print(f"[INFO] Falling back to title/year matching for '{title}' ({year_int})")
+    print(
+        f"[INFO] Falling back to title/year matching for "
+        f"'{format_movie_label(title, year_int)}'"
+    )
     return find_movie(movies, title, year_int)
 
 
@@ -627,17 +826,44 @@ def main():
     #   sys.argv[2] = optional title override
     #   sys.argv[3] = optional year override
     rating_key = sys.argv[1]
-    title_override = sys.argv[2] if len(sys.argv) >= 3 else None
-    year_override = sys.argv[3] if len(sys.argv) >= 4 else None
+    title_override = sys.argv[2].strip() if len(sys.argv) >= 3 and sys.argv[2].strip() else None
+    year_override = sys.argv[3].strip() if len(sys.argv) >= 4 and sys.argv[3].strip() else None
+
+    plex_item = None
+    plex_title = ""
+    plex_year = None
+
+    if title_override is None or year_override is None:
+        try:
+            plex_item = plex_get_metadata(rating_key)
+            plex_title = plex_item.get("title") or plex_item.get("originalTitle") or ""
+            plex_year = plex_item.get("year")
+        except Exception as exc:
+            print(
+                f"[WARN] Unable to fetch Plex metadata before watched verification "
+                f"for '{format_movie_label(title_override, year_override, rating_key)}': "
+                f"{exc}"
+            )
+
+    verification_title = title_override or plex_title or None
+    verification_year = year_override or plex_year
 
     try:
-        plex_item = plex_get_metadata(rating_key)
-    except Exception as e:
-        print(f"[ERROR] Unable to fetch Plex metadata: {e}")
+        if not confirm_watched_session(rating_key, verification_title, verification_year):
+            sys.exit(0)
+    except RuntimeError as exc:
+        print(f"[ERROR] {exc}")
         sys.exit(1)
 
-    plex_title = plex_item.get("title") or plex_item.get("originalTitle") or ""
-    plex_year = plex_item.get("year")
+    if plex_item is None:
+        try:
+            plex_item = plex_get_metadata(rating_key)
+        except Exception as e:
+            print(f"[ERROR] Unable to fetch Plex metadata: {e}")
+            sys.exit(1)
+
+        plex_title = plex_item.get("title") or plex_item.get("originalTitle") or ""
+        plex_year = plex_item.get("year")
 
     title = title_override or plex_title
     year_val = year_override or plex_year
@@ -651,6 +877,8 @@ def main():
     except ValueError:
         print(f"[ERROR] Invalid year value: {year_val}")
         sys.exit(1)
+
+    movie_label = format_movie_label(title, year_int)
 
     tmdb_id, imdb_id, folder_path = extract_ids_and_path_from_plex(plex_item)
 
@@ -695,7 +923,7 @@ def main():
     )
 
     if not movie:
-        print(f"[WARN] No matching Radarr movie found for '{title}' ({year_int}).")
+        print(f"[WARN] No matching Radarr movie found for '{movie_label}'.")
         sys.exit(0)
 
     movie_id = movie.get("id")
@@ -723,30 +951,32 @@ def main():
         response.raise_for_status()
         if keep_tag_id not in updated_tags:
             print(
-                f"[INFO] Tag '{WATCHED_TAG_LABEL}' applied to '{title}' & unmonitored."
+                f"[INFO] Tag '{WATCHED_TAG_LABEL}' applied to '{movie_label}' "
+                "& unmonitored."
             )
         else:
-            print(f"[INFO] Tag '{WATCHED_TAG_LABEL}' applied to '{title}'.")
+            print(f"[INFO] Tag '{WATCHED_TAG_LABEL}' applied to '{movie_label}'.")
     except Exception as e:
         print(f"[ERROR] Failed to apply tag & unmonitor: {e}")
         sys.exit(1)
 
     if keep_tag_id is not None and keep_tag_id in updated_tags:
         print(
-            f"[INFO] Keep-tag present. Skipping deletion for '{title}'  & keeping monitored."
+            f"[INFO] Keep-tag present. Skipping deletion for '{movie_label}' "
+            "& keeping monitored."
         )
         sys.exit(0)
 
     if not movie_file or "id" not in movie_file:
-        print(f"[WARN] Radarr shows no movieFile for '{title}'. Unable to delete.")
+        print(f"[WARN] Radarr shows no movieFile for '{movie_label}'. Unable to delete.")
         sys.exit(0)
 
     file_id = movie_file["id"]
 
     try:
-        deletion_time = queue_movie_deletion(file_id, movie_id, title)
+        deletion_time = queue_movie_deletion(file_id, movie_id, title, year_int)
         print(
-            f"[INFO] '{title}' queued for deletion at "
+            f"[INFO] '{movie_label}' queued for deletion at "
             f"{format_local_timestamp(deletion_time)}."
         )
     except Exception as e:
