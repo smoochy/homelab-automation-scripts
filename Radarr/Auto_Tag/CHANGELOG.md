@@ -27,6 +27,8 @@
   `Title (Year)` format.
 - The README examples were updated to reflect the corrected log
   output and queue payload format.
+- The script README now links directly to this changelog so
+  behavior changes stay discoverable.
 
 ## 2026-03-08
 

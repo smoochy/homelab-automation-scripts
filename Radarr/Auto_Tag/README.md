@@ -1,60 +1,59 @@
-# Radarr Auto Tag for Tautulli
+# Radarr Auto Tag and Deferred Cleanup for Tautulli
 
-This script marks watched Plex movies in Radarr and schedules movie file
-deletion through a persistent queue.
+This script applies watched-state automation in Radarr and schedules deferred
+movie file cleanup through a persistent queue.
 
 It is designed to work safely with Tautulli's `Stop` trigger and then
-independently verifies the actual watch progress from Tautulli before
-touching Radarr.
+independently verifies the actual watch progress from Tautulli before touching
+Radarr.
 
-## What the script does
+## Table of Contents
 
-When Tautulli sends a Plex `rating_key`, the script:
+- [Background](#background)
+- [Features](#features)
+- [Files](#files)
+- [Configuration](#configuration)
+- [Install](#install)
+- [Usage](#usage)
+- [Transparency](#transparency)
+- [Maintainers](#maintainers)
+- [Queue Behavior](#queue-behavior)
+- [Playback Scenarios](#playback-scenarios)
+- [Cron Example](#cron-example)
+- [Verification](#verification)
+- [Notes](#notes)
+- [Contributing](#contributing)
+- [License](#license)
 
-1. Processes any due queue entries before handling the current event.
-2. Reads `movie_watched_percent` from the local Tautulli `config.ini`.
-3. Looks up the most recent completed movie session in Tautulli.
-4. Stops immediately if the recorded progress is below Tautulli's watched threshold.
-5. Loads Plex metadata for the movie.
-6. Matches the movie in Radarr.
-7. Adds the `watched` tag.
-8. Sets `monitored=false` if the movie does not have the `keep` tag.
-9. Queues the movie file for delayed deletion.
+## Background
 
-## Matching order
-
-The Radarr movie lookup uses this order:
-
-1. TMDb ID from Plex metadata
-2. IMDb ID from Plex metadata
-3. Folder path
-4. Title and year fallback
+Tautulli can trigger scripts when playback stops, but that event alone is not a
+safe signal for changing library state. This script uses Tautulli as the source
+of truth, validates the final watch progress from Tautulli data, and then
+updates Radarr only when the movie was actually watched far enough.
 
 ## Features
 
-- Uses the Plex `rating_key` from Tautulli.
-- Persists delayed deletions in `radarr_movie.pending.json`.
-- Supports queue-only processing with `--run-pending`.
-- Loads configuration from container environment variables.
-- Also loads a local `.env` file next to the script for manual runs.
-- Supports overriding the `.env` path with `AUTO_TAG_ENV_FILE`.
-- Falls back to the Python standard library when `requests` is not installed.
-- Works well in Linux-based Tautulli containers and on Unraid hosts.
-- Reads the movie watched threshold directly from Tautulli's `config.ini`.
-- Verifies the last completed movie session from Tautulli's `tautulli.db`.
-- Prevents false-positive cleanup runs caused by bad initial resume offsets.
-- Handles multi-session movie watching safely.
+- Uses the Plex `rating_key` from Tautulli
+- Persists delayed deletions in `radarr_movie.pending.json`
+- Supports queue-only processing with `--run-pending`
+- Loads configuration from container environment variables
+- Also loads a local `.env` file next to the script for manual runs
+- Supports overriding the `.env` path with `AUTO_TAG_ENV_FILE`
+- Falls back to the Python standard library when `requests` is not installed
+- Works well in Linux-based Tautulli containers and on Unraid hosts
+- Reads the movie watched threshold directly from Tautulli's `config.ini`
+- Verifies the last completed movie session from Tautulli's `tautulli.db`
+- Prevents false-positive cleanup runs caused by bad initial resume offsets
+- Handles multi-session movie watching safely
 
 ## Files
 
-- `radarr_movie.py`
-  Main script.
-- `.env.example`
-  Example environment file.
-- `radarr_movie.pending.json`
-  Persistent deletion queue.
-- `radarr_movie.pending.json.lock`
-  Advisory queue lock file used on platforms with `fcntl` support.
+- `radarr_movie.py`: main script
+- `.env.example`: example environment file
+- `radarr_movie.pending.json`: persistent deletion queue
+- `radarr_movie.pending.json.lock`: advisory queue lock file used on platforms
+  with `fcntl` support
 
 ## Configuration
 
@@ -89,29 +88,30 @@ REQUEST_TIMEOUT_SECONDS=10
 
 Notes:
 
-- `RADARR_URL` and `RADARR_API_KEY` are always required.
-- `PLEX_URL` and `PLEX_TOKEN` are required for normal watch-event runs.
-- `PLEX_URL` and `PLEX_TOKEN` are not required for `--run-pending`.
-- `TAUTULLI_CONFIG_PATH` defaults to the local Tautulli `config.ini`.
-- `TAUTULLI_DB_PATH` defaults to the local Tautulli `tautulli.db`.
+- `RADARR_URL` and `RADARR_API_KEY` are always required
+- `PLEX_URL` and `PLEX_TOKEN` are required for normal watch-event runs
+- `PLEX_URL` and `PLEX_TOKEN` are not required for `--run-pending`
+- `TAUTULLI_CONFIG_PATH` defaults to the local Tautulli `config.ini`
+- `TAUTULLI_DB_PATH` defaults to the local Tautulli `tautulli.db`
 - `SESSION_WAIT_SECONDS` controls how long the script waits for the just-stopped
-  Tautulli session to appear in the database.
+  Tautulli session to appear in the database
 - `SESSION_LOOKBACK_HOURS` limits how far back the script searches for the last
-  completed movie session.
-- If present, a local `.env` file is loaded automatically from the script directory.
-- `AUTO_TAG_ENV_FILE` can point to a different `.env` file for manual runs.
+  completed movie session
+- If present, a local `.env` file is loaded automatically from the script
+  directory
+- `AUTO_TAG_ENV_FILE` can point to a different `.env` file for manual runs
 - Tautulli does not load `.env` files by itself. For container use, inject the
-  variables through your Compose stack or container configuration.
+  variables through your Compose stack or container configuration
 
-## Setup
+## Install
 
 ### Prerequisites
 
-- Tautulli is installed and connected to Plex.
-- Radarr is running and API access is enabled.
-- You know your Plex token.
-- `radarr_movie.py` is available inside the Tautulli container.
-- The required environment variables are available to the script.
+- Tautulli is installed and connected to Plex
+- Radarr is running and API access is enabled
+- You know your Plex token
+- `radarr_movie.py` is available inside the Tautulli container
+- The required environment variables are available to the script
 
 Plex token reference:
 [Finding an authentication token / X-Plex-Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
@@ -185,7 +185,7 @@ python3 radarr_movie.py <rating_key> [title] [year]
 
 For the normal Tautulli workflow, only `{rating_key}` is needed.
 
-### 5. Keep Tautulli as the single source of truth
+### 5. Keep Tautulli as the Single Source of Truth
 
 The script reads `movie_watched_percent` directly from Tautulli:
 
@@ -201,7 +201,7 @@ Recommended:
 Plex and Tautulli should still use matching watched thresholds so Plex's
 internal markers and Tautulli's final validation agree.
 
-### 6. Optional queue processing schedule
+### 6. Optional Queue Processing Schedule
 
 If you want queued deletions processed without waiting for the next watch event,
 schedule:
@@ -212,7 +212,7 @@ docker exec tautulli python3 /config/scripts/auto_tag/radarr_movie.py --run-pend
 
 ## Usage
 
-### Handle a watch event
+### Handle a Watch Event
 
 ```bash
 python3 /config/scripts/auto_tag/radarr_movie.py <rating_key>
@@ -224,7 +224,7 @@ Optional override arguments:
 python3 /config/scripts/auto_tag/radarr_movie.py <rating_key> "<title>" <year>
 ```
 
-### Process pending deletions only
+### Process Pending Deletions Only
 
 ```bash
 python3 /config/scripts/auto_tag/radarr_movie.py --run-pending
@@ -236,15 +236,25 @@ From the Unraid host, the recommended command is:
 docker exec tautulli python3 /config/scripts/auto_tag/radarr_movie.py --run-pending
 ```
 
-## Queue behavior
+## Transparency
 
-- Queue data is stored in `radarr_movie.pending.json`.
-- Entries survive Tautulli container restarts.
-- New queue entries replace older entries for the same `file_id`.
-- Queue timestamps are stored in UTC.
-- Log timestamps are shown in local time.
+The code, documentation, and related project materials in this repository were
+created and refined with AI assistance. All generated output was reviewed and
+adapted before publication.
+
+## Maintainers
+
+- [smoochy](https://github.com/smoochy)
+
+## Queue Behavior
+
+- Queue data is stored in `radarr_movie.pending.json`
+- Entries survive Tautulli container restarts
+- New queue entries replace older entries for the same `file_id`
+- Queue timestamps are stored in UTC
+- Log timestamps are shown in local time
 - If Radarr has already removed the file, the queue entry is treated as done on
-  the next run.
+  the next run
 
 Current queue payload format:
 
@@ -264,11 +274,11 @@ Current queue payload format:
 }
 ```
 
-## Playback scenarios
+## Playback Scenarios
 
 The examples below use an anonymized movie title: `Example Movie`.
 
-### Scenario 1: Movie stopped too early
+### Scenario 1: Movie Stopped Too Early
 
 Example:
 
@@ -287,7 +297,7 @@ Typical log output:
 [INFO] Watched verification failed for 'Example Movie (2024) [ratingKey 1748]'. Required 95% but only 35.00% was recorded. Skipping Radarr changes.
 ```
 
-### Scenario 2: Movie watched over multiple sessions
+### Scenario 2: Movie Watched Over Multiple Sessions
 
 Example:
 
@@ -305,7 +315,7 @@ Behavior:
 This means you can watch a movie in multiple sittings without having to disable
 automation.
 
-### Scenario 3: False watched signal from Plex or the client
+### Scenario 3: False Watched Signal from Plex or the Client
 
 Example:
 
@@ -323,7 +333,7 @@ Behavior now:
 
 This is the main protection against false-positive tag and delete runs.
 
-### Scenario 4: Movie watched normally
+### Scenario 4: Movie Watched Normally
 
 Example:
 
@@ -342,7 +352,7 @@ Typical log output:
 [INFO] 'Example Movie (2024)' queued for deletion at 14.03.2026 23:15:00 CET+0100.
 ```
 
-### Scenario 5: Keep-tag present
+### Scenario 5: Keep Tag Present
 
 Example:
 
@@ -355,7 +365,7 @@ Behavior:
 - `monitored` stays unchanged.
 - No deletion is queued.
 
-## Cron example
+## Cron Example
 
 Daily at `04:00`:
 
@@ -370,9 +380,9 @@ frequent schedule such as every 5 or 10 minutes.
 
 After watching a movie past the configured watched threshold:
 
-- Tautulli should show the script run in its logs.
-- Movies with the `keep` tag should be tagged as watched and not queued for deletion.
-- Movies without the `keep` tag should be tagged, unmonitored, and queued.
+- Tautulli should show the script run in its logs
+- Movies with the `keep` tag should be tagged as watched and not queued for deletion
+- Movies without the `keep` tag should be tagged, unmonitored, and queued
 
 Example log output when a movie is kept:
 
@@ -384,6 +394,19 @@ Example log output when a movie is queued for deletion:
 
 ## Notes
 
-- The script exits with an error if the configured watched tag does not exist in Radarr.
-- If the keep tag does not exist, the script cannot use it to protect movies from deletion.
-- If no `movieFile` is present in Radarr, the script skips deletion.
+- The script exits with an error if the configured watched tag does not exist in Radarr
+- If the keep tag does not exist, the script cannot use it to protect movies from deletion
+- If no `movieFile` is present in Radarr, the script skips deletion
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for script-specific change history.
+
+## Contributing
+
+Issues and pull requests are welcome. Keep changes focused on reliable Tautulli
+and Radarr automation and update the README when behavior changes.
+
+## License
+
+[MIT](../../LICENSE) 2026 [smoochy](https://github.com/smoochy)
