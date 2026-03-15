@@ -1,7 +1,7 @@
 # Radarr Auto Tag and Deferred Cleanup for Tautulli
 
-This script applies watched-state automation in Radarr and schedules deferred
-movie file cleanup through a persistent queue.
+This automation helper applies watched-state handling in Radarr and schedules
+deferred movie file cleanup through a persistent queue.
 
 It is designed to work safely with Tautulli's `Stop` trigger and then
 independently verifies the actual watch progress from Tautulli before touching
@@ -409,4 +409,4 @@ and Radarr automation and update the README when behavior changes.
 
 ## License
 
-[MIT](../../LICENSE) 2026 [smoochy](https://github.com/smoochy)
+[MIT](../../../LICENSE) 2026 [smoochy](https://github.com/smoochy)

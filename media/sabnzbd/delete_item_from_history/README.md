@@ -1,7 +1,7 @@
 # SABnzbd History Cleanup Scripts
 
-These scripts clean up completed SABnzbd history entries for selected
-categories.
+These scripts automate cleanup of completed SABnzbd history entries for
+selected categories.
 
 The workflow is split into two parts:
 
@@ -153,4 +153,4 @@ requirements change.
 
 ## License
 
-[MIT](../../LICENSE) 2026 [smoochy](https://github.com/smoochy)
+[MIT](../../../LICENSE) 2026 [smoochy](https://github.com/smoochy)

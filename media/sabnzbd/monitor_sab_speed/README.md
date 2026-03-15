@@ -7,7 +7,7 @@ threshold.
 
 It is intended for self-hosted Docker and Unraid environments where SABnzbd is
 part of a larger automation stack and occasional network or VPN degradation is
-better handled through controlled maintenance automation than repeated manual
+better handled through controlled host-side maintenance than repeated manual
 intervention.
 
 ## Table of Contents
@@ -467,4 +467,4 @@ reflects real operational requirements.
 
 ## License
 
-[MIT](../../LICENSE) 2026 [smoochy](https://github.com/smoochy)
+[MIT](../../../LICENSE) 2026 [smoochy](https://github.com/smoochy)

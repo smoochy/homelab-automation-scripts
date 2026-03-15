@@ -1,7 +1,7 @@
 # SABnzbd ISO Extractor Post-Processing Script
 
-This script automatically extracts `.iso` files from successful SABnzbd jobs
-and removes the original ISO to save space.
+This post-processing helper extracts `.iso` files from successful SABnzbd jobs
+and removes the original ISO afterwards.
 
 It is intended to be used as a SABnzbd post-processing script and works inside
 Docker-based SABnzbd setups such as Unraid.
@@ -132,4 +132,4 @@ requirements change.
 
 ## License
 
-[MIT](../../LICENSE) 2026 [smoochy](https://github.com/smoochy)
+[MIT](../../../LICENSE) 2026 [smoochy](https://github.com/smoochy)
