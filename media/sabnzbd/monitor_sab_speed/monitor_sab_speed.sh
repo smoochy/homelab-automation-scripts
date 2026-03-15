@@ -67,6 +67,7 @@ KUMA_HELPER_PATH="${KUMA_HELPER_PATH:-${SCRIPT_DIR}/monitor_sab_speed_kuma.sh}"
 
 PREV_TS=0
 PREV_MBLEFT=""
+PREV_NZO_ID=""
 LAST_RESTART_TS=0
 
 log() {
@@ -145,13 +146,30 @@ load_state() {
 save_state() {
   local prev_ts="$1"
   local prev_mbleft="$2"
-  local last_restart_ts="$3"
+  local prev_nzo_id="$3"
+  local last_restart_ts="$4"
 
   cat > "$STATE_FILE" <<STATEEOF
 PREV_TS=${prev_ts}
 PREV_MBLEFT="${prev_mbleft}"
+PREV_NZO_ID="${prev_nzo_id}"
 LAST_RESTART_TS=${last_restart_ts}
 STATEEOF
+}
+
+save_baseline() {
+  local prev_ts="$1"
+  local prev_mbleft="$2"
+  local prev_nzo_id="$3"
+  local last_restart_ts="$4"
+
+  save_state "$prev_ts" "$prev_mbleft" "$prev_nzo_id" "$last_restart_ts"
+}
+
+clear_baseline() {
+  local last_restart_ts="$1"
+
+  save_state 0 "" "" "$last_restart_ts"
 }
 
 fetch_queue() {
@@ -323,7 +341,7 @@ is_active_download() {
 main() {
   local api_key queue_json status mbleft now elapsed delta_mb avg_mbps cooldown_until
   local below_threshold queue_grew percent_of_threshold remaining_cooldown current_speed_mbps
-  local simulation_active cooldown_override_for_test active_download
+  local simulation_active cooldown_override_for_test active_download current_nzo_id
 
   acquire_lock
   reset_log_if_needed
@@ -359,6 +377,7 @@ main() {
 
   status="$(jq -r '.queue.status // empty' <<< "$queue_json")"
   mbleft="$(jq -r '.queue.mbleft // empty' <<< "$queue_json")"
+  current_nzo_id="$(jq -r '.queue.slots[0].nzo_id // empty' <<< "$queue_json")"
   current_speed_mbps="$(jq -r '.queue.kbpersec // 0' <<< "$queue_json" | awk '{ printf "%.2f", $1 / 1024 }')"
   now="$(date +%s)"
 
@@ -393,20 +412,26 @@ main() {
     avg_mbps="$FORCE_LOW_SPEED_MBPS"
   else
     if (( active_download == 0 )); then
-      save_state 0 "" "$LAST_RESTART_TS"
+      clear_baseline "$LAST_RESTART_TS"
       announce "no active download detected, nothing to do"
       exit 0
     fi
 
     if [[ -z "${PREV_MBLEFT}" || "$PREV_TS" -le 0 ]]; then
-      save_state "$now" "$mbleft" "$LAST_RESTART_TS"
+      save_baseline "$now" "$mbleft" "$current_nzo_id" "$LAST_RESTART_TS"
       announce "baseline sample stored, waiting for next run"
       exit 0
     fi
 
-    elapsed=$(( now - PREV_TS ))
-    if (( elapsed < SAMPLE_WINDOW_SECONDS )); then
-      announce "sample age ${elapsed}s is below target window ${SAMPLE_WINDOW_SECONDS}s, waiting"
+    if [[ -z "${PREV_NZO_ID}" && -n "$current_nzo_id" ]]; then
+      save_baseline "$now" "$mbleft" "$current_nzo_id" "$LAST_RESTART_TS"
+      announce "queue identity baseline initialized, waiting for next run"
+      exit 0
+    fi
+
+    if [[ -n "$PREV_NZO_ID" && -n "$current_nzo_id" && "$PREV_NZO_ID" != "$current_nzo_id" ]]; then
+      save_baseline "$now" "$mbleft" "$current_nzo_id" "$LAST_RESTART_TS"
+      announce "queue identity changed from ${PREV_NZO_ID} to ${current_nzo_id}, baseline reset"
       exit 0
     fi
 
@@ -417,8 +442,14 @@ main() {
     fi
 
     if (( queue_grew == 1 )); then
-      save_state "$now" "$mbleft" "$LAST_RESTART_TS"
-      announce "queue grew by more than 1 MB, baseline reset"
+      save_baseline "$now" "$mbleft" "$current_nzo_id" "$LAST_RESTART_TS"
+      announce "queue grew by more than 1 MB during warmup, baseline reset"
+      exit 0
+    fi
+
+    elapsed=$(( now - PREV_TS ))
+    if (( elapsed < SAMPLE_WINDOW_SECONDS )); then
+      announce "sample age ${elapsed}s is below target window ${SAMPLE_WINDOW_SECONDS}s, waiting"
       exit 0
     fi
 
@@ -483,9 +514,9 @@ main() {
   fi
 
   if (( simulation_active == 1 && active_download == 0 )); then
-    save_state 0 "" "$LAST_RESTART_TS"
+    clear_baseline "$LAST_RESTART_TS"
   else
-    save_state "$now" "$mbleft" "$LAST_RESTART_TS"
+    save_state "$now" "$mbleft" "$current_nzo_id" "$LAST_RESTART_TS"
   fi
 }
 

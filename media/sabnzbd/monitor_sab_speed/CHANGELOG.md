@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-03-15
+
+### Queue-aware baseline reset
+
+- Baseline tracking now includes the active SABnzbd queue identity via
+  `slots[0].nzo_id`.
+- The monitor now resets its measurement baseline immediately when the queue
+  grows during warmup or when the active queue identity changes.
+- This prevents stale or misleading average throughput values when new
+  downloads enter the queue or the queue context changes during the sample
+  window.
+
 ## 2026-03-14
 
 ### Initial release

@@ -44,6 +44,7 @@ speed remains below the configured threshold.
 
 - Runs on the Docker or Unraid host, not inside the SABnzbd container
 - Calculates average speed over a configurable time window
+- Measures that average only while the queue context stays stable
 - Skips idle, paused, and otherwise non-active queue states
 - Prevents repeated recovery loops with a configurable cooldown period
 - Supports multiple recovery paths:
@@ -282,6 +283,11 @@ Typical flow:
    window.
 5. It decides whether recovery should be skipped, deferred, or triggered.
 
+That throughput window is tied to a stable queue context. If the queue grows
+materially or the active SABnzbd job changes before the window completes, the
+script resets the baseline and starts a fresh measurement window instead of
+using stale data.
+
 ## Uptime Kuma Maintenance
 
 When `ENABLE_KUMA_MAINTENANCE="1"`, `monitor_sab_speed.sh` calls
@@ -344,6 +350,7 @@ What the simulation does:
 - keeps cooldown active by default and only bypasses it when `IGNORE_COOLDOWN_FOR_TEST=1` is set
 - logs clearly that the run was forced for testing
 - logs whether the Kuma helper would start or be skipped when Kuma integration is enabled
+- does not change the normal queue-baseline reset rules when test mode is off
 
 Recommended commands:
 
@@ -380,9 +387,10 @@ Recovery is skipped when:
 - SABnzbd is not currently downloading
 - the queue data is incomplete
 - the current run only establishes the baseline sample
+- the active SABnzbd queue identity changed and the script reset the baseline
 - the previous sample is younger than the configured average window
-- the queue grew significantly, meaning the earlier baseline is no longer a good
-  comparison point
+- the queue grew significantly during warmup, meaning the earlier baseline is no
+  longer a good comparison point
 - the average speed is above the configured threshold
 - the average speed is below the threshold but the cooldown is still active
 
@@ -419,6 +427,17 @@ Example User Scripts output:
 2026-03-14 20:07:23 recovery: komodo restart-stack sabnzbd
 ```
 
+Example warmup reset output after a queue change:
+
+```text
+2026-03-15 11:28:01 status=Downloading, current=66.93 MB/s, remaining=8374.90 MB, threshold=10 MB/s, window=2 min
+2026-03-15 11:28:01 baseline sample stored, waiting for next run
+2026-03-15 11:29:01 status=Downloading, current=64.46 MB/s, remaining=18135.96 MB, threshold=10 MB/s, window=2 min
+2026-03-15 11:29:01 queue grew by more than 1 MB during warmup, baseline reset
+2026-03-15 11:30:02 status=Downloading, current=66.06 MB/s, remaining=6525.88 MB, threshold=10 MB/s, window=2 min
+2026-03-15 11:30:02 sample age 61s is below target window 120s, waiting
+```
+
 When testing in dry-run mode with `FORCE_LOW_SPEED_TEST=1 RESTART_ENABLED=0` and Kuma enabled:
 
 ```text
@@ -438,6 +457,8 @@ When testing in dry-run mode with `FORCE_LOW_SPEED_TEST=1 RESTART_ENABLED=0` and
 - This is a host automation script, not a container-internal helper
 - The script calculates throughput from queue progress over time, not from a
   single instantaneous speed value
+- The average window is only valid while the active queue context remains
+  stable; if the queue grows or the active job changes, the baseline is reset
 - The state file is required for multi-run averaging and should not be deleted
   while the monitor is in normal use
 - The logfile reset is age-based, not size-based
