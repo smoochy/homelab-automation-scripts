@@ -3,7 +3,7 @@
 This host-side helper coordinates Uptime Kuma maintenance around `appdata.backup`
 pre-run and post-run hooks on Unraid. It starts a dedicated manual maintenance
 before containers are stopped and releases monitors again after the related
-services and HTTP endpoints are ready.
+services, mapped HTTP endpoints, and supported unmapped DNS monitors are ready.
 
 It is intended for self-hosted maintenance workflows where backup execution,
 container restarts, and service readiness should be reflected in monitoring
@@ -34,8 +34,9 @@ workflow with a dedicated Uptime Kuma maintenance so the monitoring state stays
 aligned with the operational maintenance window.
 
 The pre-run hook enables maintenance before the backup begins. The post-run
-hook then waits for Docker containers and related HTTP monitors to recover
-before monitors are released from maintenance again.
+hook then waits for Docker containers, related HTTP monitors, and supported
+unmapped DNS monitors to recover before monitors are released from maintenance
+again.
 
 ## Features
 
@@ -46,6 +47,8 @@ before monitors are released from maintenance again.
 - Preserves an already-active maintenance instead of forcing ownership changes
 - Waits for Docker-backed services and mapped HTTP monitors before releasing
   maintenance during post-run handling
+- Probes unmapped DNS monitors directly during post-run handling so resolver
+  checks can leave maintenance without a container mapping
 - Leaves remaining monitors in maintenance when the post-run readiness timeout
   is reached, rather than clearing maintenance prematurely
 - Supports optional host alias mapping for HTTP monitor readiness checks
@@ -110,6 +113,8 @@ environment. The most important keys are:
 - `KUMA_POST_RUN_POLL_INTERVAL_SECONDS`: readiness poll interval during post-run
 - `KUMA_POST_RUN_HTTP_TIMEOUT_SECONDS`: per-request timeout for HTTP readiness
   checks
+- `KUMA_POST_RUN_DNS_TIMEOUT_SECONDS`: per-probe timeout for unmapped DNS
+  monitor readiness checks
 - `KUMA_POST_RUN_CURL_INSECURE`: set to `1` only if HTTP readiness checks must
   ignore TLS verification temporarily
 - `KUMA_HTTP_MONITOR_ALIAS_MAP`: optional JSON alias map for monitor hostnames
@@ -191,10 +196,11 @@ helper records that state and leaves ownership with the pre-existing
 maintenance.
 
 `stop` reads the helper state, rebuilds the monitor-to-container mapping, and
-waits until mapped Docker services and relevant HTTP monitors are ready again.
-As services recover, it removes only the corresponding monitors from
-maintenance. If the configured timeout is reached, it leaves the remaining
-monitors in maintenance and logs the unresolved state for follow-up.
+waits until mapped Docker services, relevant HTTP monitors, and supported
+unmapped DNS monitors are ready again. As services recover, it removes only the
+corresponding monitors from maintenance. If the configured timeout is reached,
+it leaves the remaining monitors in maintenance and logs the unresolved state
+for follow-up.
 
 ## Logging
 
@@ -210,6 +216,9 @@ that is useful for maintenance validation.
   manual maintenance with the configured title before creating a new one.
 - Host-only runtime artifacts such as `.env`, `.log`, and `.state` should not
   be committed to the repository.
+- The published `.env.example` is intentionally sanitized. Keep live hostnames,
+  alias mappings, usernames, passwords, and tokens in the local host `.env`
+  only.
 
 ## Changelog
 

@@ -31,6 +31,7 @@ KUMA_INCLUDE_INACTIVE_MONITORS="${KUMA_INCLUDE_INACTIVE_MONITORS:-1}"
 KUMA_POST_RUN_TIMEOUT_SECONDS="${KUMA_POST_RUN_TIMEOUT_SECONDS:-600}"
 KUMA_POST_RUN_POLL_INTERVAL_SECONDS="${KUMA_POST_RUN_POLL_INTERVAL_SECONDS:-5}"
 KUMA_POST_RUN_HTTP_TIMEOUT_SECONDS="${KUMA_POST_RUN_HTTP_TIMEOUT_SECONDS:-10}"
+KUMA_POST_RUN_DNS_TIMEOUT_SECONDS="${KUMA_POST_RUN_DNS_TIMEOUT_SECONDS:-10}"
 KUMA_POST_RUN_CURL_INSECURE="${KUMA_POST_RUN_CURL_INSECURE:-0}"
 LOG_RESET_DAYS="${LOG_RESET_DAYS:-7}"
 KUMA_HTTP_MONITOR_ALIAS_MAP="${KUMA_HTTP_MONITOR_ALIAS_MAP:-}"
@@ -61,6 +62,8 @@ HTTP_LAST_PROBE_URL=""
 HTTP_LAST_PROBE_CODE=""
 HTTP_LAST_PROBE_REASON=""
 HTTP_LAST_PROBE_READY=1
+DNS_LAST_PROBE_REASON=""
+DNS_LAST_PROBE_READY=1
 
 log() {
   printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG_FILE"
@@ -360,6 +363,15 @@ function normalizeMonitors(monitorMap) {
       name: monitor.name || "",
       type: monitor.type || "",
       url: monitor.url || "",
+      hostname: monitor.hostname || "",
+      port: monitor.port || "",
+      dns_resolve_server: monitor.dns_resolve_server || monitor.dnsResolveServer || "",
+      dns_resolve_type: monitor.dns_resolve_type || monitor.dnsResolveType || "",
+      conditions: Array.isArray(monitor.conditions)
+        ? monitor.conditions
+        : (typeof monitor.conditions === "string" && monitor.conditions
+          ? JSON.parse(monitor.conditions)
+          : []),
       docker_container: monitor.docker_container || monitor.dockerContainer || "",
       parent: Number.isInteger(Number.parseInt(String(monitor.parent), 10))
         ? Number.parseInt(String(monitor.parent), 10)
@@ -616,6 +628,11 @@ build_release_plan_json() {
             name: ($monitor.name // ""),
             type: ($monitor.type // ""),
             url: ($monitor.url // ""),
+            hostname: ($monitor.hostname // ""),
+            port: ($monitor.port // ""),
+            dns_resolve_server: ($monitor.dns_resolve_server // ""),
+            dns_resolve_type: ($monitor.dns_resolve_type // ""),
+            conditions: ($monitor.conditions // []),
             docker_container: ($monitor.docker_container // "")
           }
       ] as $unmapped_monitors
@@ -709,6 +726,271 @@ http_url_is_ready() {
   probe_http_url "$url"
 }
 
+probe_dns_monitor() {
+  local monitor_json="$1"
+  local output exit_code
+
+  DNS_LAST_PROBE_REASON=""
+  DNS_LAST_PROBE_READY=1
+
+  set +e
+  output="$(
+    docker exec -i \
+      -e KUMA_DNS_MONITOR_JSON="$monitor_json" \
+      -e KUMA_DNS_TIMEOUT_SECONDS="$KUMA_POST_RUN_DNS_TIMEOUT_SECONDS" \
+      "$KUMA_CONTAINER" \
+      node - <<'NODE'
+const { Resolver } = require("node:dns/promises");
+const net = require("node:net");
+
+function parseMonitor() {
+  const raw = process.env.KUMA_DNS_MONITOR_JSON || "{}";
+  return JSON.parse(raw);
+}
+
+function parseConditions(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function normalizeServerList(value) {
+  return String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+async function resolveResolverServers(value) {
+  const entries = normalizeServerList(value);
+  if (entries.length === 0) {
+    throw new Error("resolver server missing");
+  }
+
+  const resolver = new Resolver();
+  const resolved = await Promise.all(entries.map(async (entry) => {
+    if (net.isIP(entry)) {
+      return [entry];
+    }
+
+    const [v4, v6] = await Promise.allSettled([resolver.resolve4(entry), resolver.resolve6(entry)]);
+    return [
+      ...(v4.status === "fulfilled" ? v4.value : []),
+      ...(v6.status === "fulfilled" ? v6.value : []),
+    ];
+  }));
+
+  return resolved.flat().filter(Boolean);
+}
+
+async function dnsResolve(hostname, resolverServers, resolverPort, rrtype) {
+  const resolver = new Resolver({
+    timeout: Math.max(1, Number.parseInt(process.env.KUMA_DNS_TIMEOUT_SECONDS || "10", 10)) * 1000,
+    tries: 1,
+  });
+  resolver.setServers(resolverServers.map((server) => `[${server}]:${resolverPort}`));
+
+  if (rrtype === "PTR") {
+    return await resolver.reverse(hostname);
+  }
+
+  return await resolver.resolve(hostname, rrtype);
+}
+
+function testOperator(operator, variable, value) {
+  switch (operator) {
+    case "equals":
+      return variable === value;
+    case "not_equals":
+      return variable !== value;
+    case "contains":
+      return Array.isArray(variable) ? variable.includes(value) : String(variable).includes(value);
+    case "not_contains":
+      return Array.isArray(variable) ? !variable.includes(value) : !String(variable).includes(value);
+    case "starts_with":
+      return String(variable).startsWith(value);
+    case "not_starts_with":
+      return !String(variable).startsWith(value);
+    case "ends_with":
+      return String(variable).endsWith(value);
+    case "not_ends_with":
+      return !String(variable).endsWith(value);
+    default:
+      return false;
+  }
+}
+
+function evaluateConditions(conditions, data) {
+  if (!Array.isArray(conditions) || conditions.length === 0) {
+    return true;
+  }
+
+  const evaluateNode = (node) => {
+    if (!node || typeof node !== "object") {
+      return false;
+    }
+
+    if (node.type === "group") {
+      return evaluateSequence(Array.isArray(node.children) ? node.children : []);
+    }
+
+    if (node.type === "expression") {
+      const variable = data[node.variable];
+      return testOperator(node.operator, variable, node.value);
+    }
+
+    return false;
+  };
+
+  const evaluateSequence = (nodes) => {
+    let result = null;
+
+    for (const node of nodes) {
+      const current = evaluateNode(node);
+      const andOr = node && node.andOr === "or" ? "or" : "and";
+
+      if (result === null) {
+        result = current;
+      } else if (andOr === "or") {
+        result = result || current;
+      } else {
+        result = result && current;
+      }
+    }
+
+    return result === null ? true : result;
+  };
+
+  return evaluateSequence(conditions);
+}
+
+function buildDnsOutcome(rrtype, dnsRes, conditions) {
+  const matchesRecord = (record) => evaluateConditions(conditions, { record });
+
+  switch (rrtype) {
+    case "A":
+    case "AAAA":
+    case "PTR": {
+      const message = `Records: ${dnsRes.join(" | ")}`;
+      return { ok: dnsRes.some((record) => matchesRecord(record)), message };
+    }
+
+    case "TXT": {
+      const flat = dnsRes.flat();
+      const message = `Records: ${flat.join(" | ")}`;
+      return { ok: flat.some((record) => matchesRecord(record)), message };
+    }
+
+    case "CNAME": {
+      const record = dnsRes[0];
+      return { ok: matchesRecord(record), message: record };
+    }
+
+    case "CAA": {
+      const values = dnsRes.map((record) => record.issue).filter(Boolean);
+      return {
+        ok: values.some((record) => matchesRecord(record)),
+        message: `Records: ${values.join(" | ")}`,
+      };
+    }
+
+    case "MX": {
+      return {
+        ok: dnsRes.some((record) => matchesRecord(record.exchange)),
+        message: dnsRes
+          .map((record) => `Hostname: ${record.exchange} - Priority: ${record.priority}`)
+          .join(" | "),
+      };
+    }
+
+    case "NS": {
+      return {
+        ok: dnsRes.some((record) => matchesRecord(record)),
+        message: `Servers: ${dnsRes.join(" | ")}`,
+      };
+    }
+
+    case "SOA": {
+      return {
+        ok: matchesRecord(dnsRes.nsname),
+        message: `NS-Name: ${dnsRes.nsname} | Hostmaster: ${dnsRes.hostmaster} | Serial: ${dnsRes.serial} | Refresh: ${dnsRes.refresh} | Retry: ${dnsRes.retry} | Expire: ${dnsRes.expire} | MinTTL: ${dnsRes.minttl}`,
+      };
+    }
+
+    case "SRV": {
+      return {
+        ok: dnsRes.some((record) => matchesRecord(record.name)),
+        message: dnsRes
+          .map((record) => `Name: ${record.name} | Port: ${record.port} | Priority: ${record.priority} | Weight: ${record.weight}`)
+          .join(" | "),
+      };
+    }
+
+    default:
+      return { ok: false, message: `unsupported rrtype=${rrtype}` };
+  }
+}
+
+(async () => {
+  const monitor = parseMonitor();
+  const hostname = String(monitor.hostname || "").trim();
+  const rrtype = String(monitor.dns_resolve_type || "A").trim() || "A";
+  const resolverPort = String(monitor.port || "53").trim() || "53";
+  const conditions = parseConditions(monitor.conditions);
+
+  if (!hostname) {
+    throw new Error("hostname missing");
+  }
+
+  const resolverServers = await resolveResolverServers(monitor.dns_resolve_server);
+  if (resolverServers.length === 0) {
+    throw new Error("resolver server missing");
+  }
+
+  const dnsRes = await dnsResolve(hostname, resolverServers, resolverPort, rrtype);
+  const outcome = buildDnsOutcome(rrtype, dnsRes, conditions);
+  if (!outcome.ok) {
+    throw new Error(outcome.message || "dns condition failed");
+  }
+
+  process.stdout.write(JSON.stringify({ ok: true, message: outcome.message }));
+})().catch((error) => {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    message: error && error.message ? error.message : String(error),
+  }));
+  process.exit(1);
+});
+NODE
+  )"
+  exit_code=$?
+  set -e
+
+  if [[ $exit_code -eq 0 ]]; then
+    DNS_LAST_PROBE_REASON="$(jq -r '.message // "ready"' <<< "$output" 2>/dev/null || printf 'ready')"
+    DNS_LAST_PROBE_READY=1
+    return 0
+  fi
+
+  DNS_LAST_PROBE_REASON="$(jq -r '.message // "dns=waiting"' <<< "$output" 2>/dev/null || printf 'dns=waiting')"
+  DNS_LAST_PROBE_READY=0
+  return 1
+}
+
+dns_monitor_is_ready() {
+  local monitor_json="$1"
+  probe_dns_monitor "$monitor_json"
+}
+
 container_http_blocking_reason() {
   local container_json="$1"
   local monitor_name url
@@ -736,6 +1018,9 @@ unmapped_monitor_is_ready() {
       [[ -n "$monitor_url" ]] || return 1
       http_url_is_ready "$monitor_url"
       ;;
+    dns)
+      dns_monitor_is_ready "$monitor_json"
+      ;;
     *)
       return 1
       ;;
@@ -744,10 +1029,12 @@ unmapped_monitor_is_ready() {
 
 unmapped_monitor_blocking_reason() {
   local monitor_json="$1"
-  local monitor_type monitor_url
+  local monitor_type monitor_url monitor_hostname monitor_resolver
 
   monitor_type="$(jq -r '.type // ""' <<< "$monitor_json")"
   monitor_url="$(jq -r '.url // ""' <<< "$monitor_json")"
+  monitor_hostname="$(jq -r '.hostname // ""' <<< "$monitor_json")"
+  monitor_resolver="$(jq -r '.dns_resolve_server // ""' <<< "$monitor_json")"
 
   case "$monitor_type" in
     http)
@@ -759,6 +1046,13 @@ unmapped_monitor_blocking_reason() {
         printf ''
       else
         printf 'url=%s reason=%s' "$monitor_url" "$HTTP_LAST_PROBE_REASON"
+      fi
+      ;;
+    dns)
+      if probe_dns_monitor "$monitor_json"; then
+        printf ''
+      else
+        printf 'hostname=%s resolver=%s reason=%s' "$monitor_hostname" "$monitor_resolver" "$DNS_LAST_PROBE_REASON"
       fi
       ;;
     *)
@@ -853,7 +1147,7 @@ log_release_plan() {
 
   while IFS= read -r monitor_json; do
     [[ -n "$monitor_json" ]] || continue
-    announce_verbose "kuma: unmapped monitor id=$(jq -r '.id' <<< "$monitor_json") type=$(jq -r '.type' <<< "$monitor_json") name=$(jq -r '.name' <<< "$monitor_json") url=$(jq -r '.url' <<< "$monitor_json")"
+    announce_verbose "kuma: unmapped monitor id=$(jq -r '.id' <<< "$monitor_json") type=$(jq -r '.type' <<< "$monitor_json") name=$(jq -r '.name' <<< "$monitor_json") url=$(jq -r '.url' <<< "$monitor_json") hostname=$(jq -r '.hostname // ""' <<< "$monitor_json") resolver=$(jq -r '.dns_resolve_server // ""' <<< "$monitor_json")"
   done < <(jq -c '.unmapped_monitors[]?' <<< "$release_plan_json")
 
   if ! json_array_is_empty "$(jq -c '.unmapped_monitor_ids' <<< "$release_plan_json")"; then
